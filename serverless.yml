@@ -1,0 +1,199 @@
+service:
+  name: serverless-employees-db-app
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+  - serverless-reqvalidator-plugin
+  - serverless-aws-documentation
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'eu-west-1'}
+  tracing:
+    lambda: true
+    apiGateway: true
+  environment:
+    EMPLOYEE_TABLE: serverless-employees-${self:provider.stage}
+    S3_BUCKET_NAME: serverless-employees-db-bucket-bandar-${self:provider.stage}
+
+custom:
+  documentation:
+    api:
+      info: v1.0.0
+      title: serverless-employees-db-app
+      description: AWS configuration
+    models:
+        - name: CreateEmployeeRequest
+          contentType: 'application/json'
+          schema: ${file(src/models/EmployeeRecord.json)}
+
+
+functions:
+
+  Auth:
+    handler: src/lambda/auth/auth0Authorizer.handler
+
+  GetEmployees:
+    handler: src/lambda/http/getEmployees.handler
+    events:
+      - http:
+          method: get
+          path: employees
+          cors: true
+          auth: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EMPLOYEE_TABLE}
+      - Effect: Allow
+        Action:
+          - xray:*
+        Resource:
+          - "*"
+
+  CreateEmployee:
+    handler: src/lambda/http/createEmployee.handler
+    events:
+      - http:
+          method: post
+          path: employees
+          cors: true
+          auth: Auth
+          reqValidatorName: RequestBodyValidator
+          documentation:
+            summary: 'Create a new employee record'
+            description: 'Create a new employee record'
+            requestModels:
+              'application/json': CreateEmployeeRequest
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EMPLOYEE_TABLE}
+      - Effect: Allow
+        Action:
+          - xray:*
+        Resource:
+          - "*"
+        
+  UpdateEmployee:
+    handler: src/lambda/http/updateEmployee.handler
+    events:
+      - http:
+          method: put
+          path: employees/{employeeId}
+          cors: true
+          auth: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EMPLOYEE_TABLE}
+      - Effect: Allow
+        Action:
+          - xray:*
+        Resource:
+          - "*"
+
+  DeleteEmployee:
+    handler: src/lambda/http/deleteEmployee.handler
+    events:
+      - http:
+          method: delete
+          path: employees/{employeeId}
+          cors: true
+          auth: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EMPLOYEE_TABLE}
+      - Effect: Allow
+        Action:
+          - xray:*
+        Resource:
+          - "*"
+
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    events:
+      - http:
+          method: post
+          path: employees/{employeeId}/photo
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - s3:*
+        Resource: arn:aws:s3:::${self:provider.environment.S3_BUCKET_NAME}/*
+      - Effect: Allow
+        Action:
+          - xray:*
+        Resource:
+          - "*"
+
+resources:
+  Resources:
+
+    RequestBodyValidator:  
+      Type: "AWS::ApiGateway::RequestValidator"
+      Properties:
+        Name: 'request-body-validator'
+        RestApiId: 
+          Ref: ApiGatewayRestApi
+        ValidateRequestBody: true
+        ValidateRequestParameters: false
+
+    EmployeesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: employeeId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: employeeId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.EMPLOYEE_TABLE}
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.S3_BUCKET_NAME}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    AttachmentsBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: MyPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: '*'
+              Action: 's3:GetObject'
+              Resource: 'arn:aws:s3:::${self:provider.environment.S3_BUCKET_NAME}/*'
+        Bucket: !Ref AttachmentsBucket
